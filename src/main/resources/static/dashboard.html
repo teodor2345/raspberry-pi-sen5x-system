@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Sensirion SEN5x Environmental Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: system-ui, -apple-system, sans-serif; background-color: #f4f6f9; margin: 20px; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.08); }
+        .chart-box { position: relative; height: 320px; width: 100%; }
+        canvas { width: 100% !important; height: 100% !important; }
+        #debugStatus { font-weight: 600; color: #2e7d32; margin-bottom: 15px; font-size: 14px; }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h2>Sensirion SEN5x Environmental Dashboard</h2>
+        <button onclick="window.location.href='/logout'" style="background:#e74c3c; color:white; border:none; padding:8px 16px; border-radius:4px; cursor:pointer;">Logout</button>
+    </div>
+
+    <div class="card">
+        <label for="locationSelect"><b>Select Station Location: </b></label>
+        <select id="locationSelect" onchange="onLocationChange()">
+            <option value="marasti" selected>Mărăști</option>
+            <option value="gheorgheni">Gheorgheni</option>
+            <option value="manastur">Mănăștur</option>
+            <option value="live">Live (SEN5x Hardware Sensor)</option>
+        </select>
+    </div>
+
+    <div id="debugStatus">Status: Ready</div>
+
+    <!-- Static Station Container -->
+    <div id="staticContainer">
+        <div class="card">
+            <h3 id="staticPmTitle">Particulate Matter</h3>
+            <div class="chart-box"><canvas id="staticPmCanvas"></canvas></div>
+        </div>
+        <div class="card">
+            <h3 id="staticTempTitle">Temperature & Humidity</h3>
+            <div class="chart-box"><canvas id="staticTempCanvas"></canvas></div>
+        </div>
+    </div>
+
+    <!-- Live Stream Container -->
+    <div id="liveContainer" style="display:none;">
+        <div class="card">
+            <h3>Particulate Matter (Live SEN5x Stream - Max 20 Points)</h3>
+            <div class="chart-box"><canvas id="livePmCanvas"></canvas></div>
+        </div>
+        <div class="card">
+            <h3>Temperature & Humidity (Live SEN5x Stream - Max 20 Points)</h3>
+            <div class="chart-box"><canvas id="liveTempCanvas"></canvas></div>
+        </div>
+    </div>
+
+    <script>
+        let staticPmChart = null, staticTempChart = null;
+        let livePmChart = null, liveTempChart = null;
+        let pollTimer = null;
+
+        function setStatus(msg, err = false) {
+            const s = document.getElementById('debugStatus');
+            s.innerText = "Status: " + msg;
+            s.style.color = err ? "#d32f2f" : "#2e7d32";
+        }
+
+        function onLocationChange() {
+            if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+
+            const loc = document.getElementById('locationSelect').value;
+
+            if (loc === 'live') {
+                document.getElementById('staticContainer').style.display = 'none';
+                document.getElementById('liveContainer').style.display = 'block';
+                setupLiveCharts();
+                updateLiveStream();
+                pollTimer = setInterval(updateLiveStream, 500);
+            } else {
+                document.getElementById('liveContainer').style.display = 'none';
+                document.getElementById('staticContainer').style.display = 'block';
+                loadStaticLocation(loc);
+            }
+        }
+
+        async function loadStaticLocation(loc) {
+            const locText = document.getElementById('locationSelect').options[document.getElementById('locationSelect').selectedIndex].text;
+            document.getElementById('staticPmTitle').innerText = `Particulate Matter (${locText})`;
+            document.getElementById('staticTempTitle').innerText = `Temperature & Humidity (${locText})`;
+
+            try {
+                const res = await fetch(`/api/sensor/data?location=${loc}`);
+                const data = await res.json();
+
+                if (staticPmChart) staticPmChart.destroy();
+                if (staticTempChart) staticTempChart.destroy();
+
+                staticPmChart = new Chart(document.getElementById('staticPmCanvas'), {
+                    type: 'line',
+                    data: {
+                        labels: data.map(d => d.timestamp),
+                        datasets: [
+                            { label: 'PM 1.0 (µg/m³)', data: data.map(d => d.pm1), borderColor: '#3498db', backgroundColor: '#3498db' },
+                            { label: 'PM 2.5 (µg/m³)', data: data.map(d => d.pm25), borderColor: '#e67e22', backgroundColor: '#e67e22' },
+                            { label: 'PM 10 (µg/m³)', data: data.map(d => d.pm10), borderColor: '#e74c3c', backgroundColor: '#e74c3c' }
+                        ]
+                    },
+                    options: { responsive: true, maintainAspectRatio: false }
+                });
+
+                staticTempChart = new Chart(document.getElementById('staticTempCanvas'), {
+                    type: 'line',
+                    data: {
+                        labels: data.map(d => d.timestamp),
+                        datasets: [
+                            { label: 'Temperature (°C)', data: data.map(d => d.temperature), borderColor: '#2ecc71', backgroundColor: '#2ecc71', yAxisID: 'yT' },
+                            { label: 'Humidity (%)', data: data.map(d => d.humidity), borderColor: '#9b59b6', backgroundColor: '#9b59b6', yAxisID: 'yH' }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        scales: {
+                            yT: { type: 'linear', position: 'left' },
+                            yH: { type: 'linear', position: 'right', grid: { drawOnChartArea: false } }
+                        }
+                    }
+                });
+
+                setStatus(`Station: ${locText}`);
+            } catch (e) {
+                setStatus("Error loading static location: " + e.message, true);
+            }
+        }
+
+        function setupLiveCharts() {
+            if (livePmChart) livePmChart.destroy();
+            if (liveTempChart) liveTempChart.destroy();
+
+            livePmChart = new Chart(document.getElementById('livePmCanvas'), {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [
+                        { label: 'PM 1.0', data: [], borderColor: '#3498db', backgroundColor: '#3498db', tension: 0.1 },
+                        { label: 'PM 2.5', data: [], borderColor: '#e67e22', backgroundColor: '#e67e22', tension: 0.1 },
+                        { label: 'PM 10', data: [], borderColor: '#e74c3c', backgroundColor: '#e74c3c', tension: 0.1 }
+                    ]
+                },
+                options: { responsive: true, maintainAspectRatio: false, animation: false }
+            });
+
+            liveTempChart = new Chart(document.getElementById('liveTempCanvas'), {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [
+                        { label: 'Temperature (°C)', data: [], borderColor: '#2ecc71', backgroundColor: '#2ecc71', yAxisID: 'yT', tension: 0.1 },
+                        { label: 'Humidity (%)', data: [], borderColor: '#9b59b6', backgroundColor: '#9b59b6', yAxisID: 'yH', tension: 0.1 }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    scales: {
+                        yT: { type: 'linear', position: 'left' },
+                        yH: { type: 'linear', position: 'right', grid: { drawOnChartArea: false } }
+                    }
+                }
+            });
+        }
+
+        async function updateLiveStream() {
+            try {
+                const res = await fetch('/api/sensor/data?location=live');
+                const data = await res.json();
+
+                if (!data || data.length === 0) {
+                    setStatus("Waiting for hardware live output...");
+                    return;
+                }
+
+                livePmChart.data.labels = data.map(d => d.timestamp);
+                livePmChart.data.datasets[0].data = data.map(d => d.pm1);
+                livePmChart.data.datasets[1].data = data.map(d => d.pm25);
+                livePmChart.data.datasets[2].data = data.map(d => d.pm10);
+                livePmChart.update();
+
+                liveTempChart.data.labels = data.map(d => d.timestamp);
+                liveTempChart.data.datasets[0].data = data.map(d => d.temperature);
+                liveTempChart.data.datasets[1].data = data.map(d => d.humidity);
+                liveTempChart.update();
+
+                setStatus(`Live hardware streaming active (${data.length}/20 readings displayed)`);
+            } catch (e) {
+                setStatus("Live update error: " + e.message, true);
+            }
+        }
+
+        onLocationChange();
+    </script>
+</body>
+</html>
